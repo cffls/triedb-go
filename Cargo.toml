@@ -1,0 +1,15 @@
+[workspace]
+members = ["triedb-ffi"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/cffls/triedb-go"
+
+[workspace.dependencies]
+# External dependencies
+alloy-primitives = "1.2.1"
+alloy-trie = "0.8.1"
+cbindgen = "0.27.0"

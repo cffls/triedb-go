@@ -1,0 +1,34 @@
+# Rust
+target/
+*.rs.bk
+
+# Go
+*.exe
+*.test
+*.out
+
+# Build artifacts
+*.so
+*.dylib
+*.a
+*.dll
+
+# Test databases
+*.db
+*.db.meta
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Profiling
+*.prof
+cpu.prof
+mem.prof

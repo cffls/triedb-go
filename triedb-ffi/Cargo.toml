@@ -1,0 +1,17 @@
+[package]
+name = "triedb-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+triedb = { git = "https://github.com/base/triedb.git", rev = "7050ef1" }
+
+alloy-primitives.workspace = true
+alloy-trie.workspace = true
+
+[build-dependencies]
+cbindgen.workspace = true
