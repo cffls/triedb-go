@@ -470,11 +470,6 @@ type OverlayState struct {
 	frozenPtr *C.TrieDBOverlayState
 }
 
-// OverlayedRoot represents the result of computing a state root with overlay
-type OverlayedRoot struct {
-	ptr *C.TrieDBOverlayedRoot
-}
-
 // NewOverlayState creates a new overlay state
 func NewOverlayState() (*OverlayState, error) {
 	var ptr *C.TrieDBOverlayStateMut
@@ -637,26 +632,23 @@ func (o *OverlayState) Close() error {
 // ComputeRootWithOverlay computes what the state root would be if the overlay changes were applied
 // This does not modify the database, it only computes the new root hash
 // The overlay will be automatically frozen if not already frozen
-func (tx *TransactionRO) ComputeRootWithOverlay(overlay *OverlayState) (*OverlayedRoot, error) {
+func (tx *TransactionRO) ComputeRootWithOverlay(overlay *OverlayState) (Hash, error) {
 	// Auto-freeze if needed
 	if overlay.frozenPtr == nil {
 		if err := overlay.Freeze(); err != nil {
-			return nil, err
+			return Hash{}, err
 		}
 	}
 
 	var ptr *C.TrieDBOverlayedRoot
 	err := mapError(uint32(C.triedb_ro_compute_root_with_overlay(tx.ptr, overlay.frozenPtr, &ptr)))
 	if err != nil {
-		return nil, err
+		return Hash{}, err
 	}
-	return &OverlayedRoot{ptr: ptr}, nil
-}
+	defer C.triedb_overlayed_root_free(ptr)
 
-// Root returns the computed state root hash
-func (r *OverlayedRoot) Root() (Hash, error) {
 	var hash C.CHash
-	err := mapError(uint32(C.triedb_overlayed_root_hash(r.ptr, &hash)))
+	err = mapError(uint32(C.triedb_overlayed_root_hash(ptr, &hash)))
 	if err != nil {
 		return Hash{}, err
 	}
@@ -664,14 +656,4 @@ func (r *OverlayedRoot) Root() (Hash, error) {
 	var result Hash
 	copy(result[:], C.GoBytes(unsafe.Pointer(&hash.bytes[0]), C.int(HashLength)))
 	return result, nil
-}
-
-// Close frees the overlayed root
-func (r *OverlayedRoot) Close() error {
-	if r.ptr == nil {
-		return nil
-	}
-	err := mapError(uint32(C.triedb_overlayed_root_free(r.ptr)))
-	r.ptr = nil
-	return err
 }

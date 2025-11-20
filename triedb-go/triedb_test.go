@@ -1263,15 +1263,9 @@ func TestComputeRootWithOverlay_EmptyOverlay(t *testing.T) {
 	defer tx.Commit()
 
 	// Compute root with empty overlay (will auto-freeze)
-	result, err := tx.ComputeRootWithOverlay(overlay)
+	newRoot, err := tx.ComputeRootWithOverlay(overlay)
 	if err != nil {
 		t.Fatalf("Failed to compute root with overlay: %v", err)
-	}
-	defer result.Close()
-
-	newRoot, err := result.Root()
-	if err != nil {
-		t.Fatalf("Failed to get root: %v", err)
 	}
 
 	// Empty overlay should not change the root
@@ -1333,15 +1327,9 @@ func TestComputeRootWithOverlay_WithChanges(t *testing.T) {
 	defer roTx.Commit()
 
 	// Compute root with overlay (will auto-freeze)
-	result, err := roTx.ComputeRootWithOverlay(overlay)
+	overlayRoot, err := roTx.ComputeRootWithOverlay(overlay)
 	if err != nil {
 		t.Fatalf("Failed to compute root with overlay: %v", err)
-	}
-	defer result.Close()
-
-	overlayRoot, err := result.Root()
-	if err != nil {
-		t.Fatalf("Failed to get overlay root: %v", err)
 	}
 
 	// Overlay root should be different from current root
@@ -1409,15 +1397,9 @@ func TestComputeRootWithOverlay_MultipleChanges(t *testing.T) {
 	}
 	defer roTx.Commit()
 
-	result, err := roTx.ComputeRootWithOverlay(overlay)
+	overlayRoot, err := roTx.ComputeRootWithOverlay(overlay)
 	if err != nil {
 		t.Fatalf("Failed to compute root with overlay: %v", err)
-	}
-	defer result.Close()
-
-	overlayRoot, err := result.Root()
-	if err != nil {
-		t.Fatalf("Failed to get overlay root: %v", err)
 	}
 
 	// Commit the same changes
@@ -1503,15 +1485,9 @@ func TestComputeRootWithOverlay_WithStorage(t *testing.T) {
 	}
 	defer roTx.Commit()
 
-	result, err := roTx.ComputeRootWithOverlay(overlay)
+	overlayRoot, err := roTx.ComputeRootWithOverlay(overlay)
 	if err != nil {
 		t.Fatalf("Failed to compute root with overlay: %v", err)
-	}
-	defer result.Close()
-
-	overlayRoot, err := result.Root()
-	if err != nil {
-		t.Fatalf("Failed to get overlay root: %v", err)
 	}
 
 	// Commit the storage change
@@ -1591,15 +1567,9 @@ func TestComputeRootWithOverlay_Deletions(t *testing.T) {
 	}
 	defer roTx.Commit()
 
-	result, err := roTx.ComputeRootWithOverlay(overlay)
+	overlayRoot, err := roTx.ComputeRootWithOverlay(overlay)
 	if err != nil {
 		t.Fatalf("Failed to compute root with overlay: %v", err)
-	}
-	defer result.Close()
-
-	overlayRoot, err := result.Root()
-	if err != nil {
-		t.Fatalf("Failed to get overlay root: %v", err)
 	}
 
 	// Actually delete the account

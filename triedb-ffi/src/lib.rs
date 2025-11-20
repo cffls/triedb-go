@@ -55,7 +55,8 @@ pub struct TrieDBOverlayState {
 
 pub struct TrieDBOverlayedRoot {
     pub root: CHash,
-    // We keep the internal data private for now
+    // We keep the internal data for potential future use (contains branch node updates)
+    #[allow(dead_code)]
     inner: triedb::storage::overlay_root::OverlayedRoot,
 }
 

@@ -233,11 +233,7 @@ isEmpty, err := overlay.IsEmpty()
 // Compute the new state root with a read-only transaction
 // The overlay is automatically frozen when needed
 tx, err := db.BeginRO()
-result, err := tx.ComputeRootWithOverlay(overlay)
-defer result.Close()
-
-// Get the computed root
-newRoot, err := result.Root()
+newRoot, err := tx.ComputeRootWithOverlay(overlay)
 
 // The database remains unchanged - changes are only in the overlay
 ```
@@ -262,8 +258,7 @@ type Account struct {
 }
 
 // Overlay types
-type OverlayState struct { ... }   // Overlay for accumulating and computing changes
-type OverlayedRoot struct { ... }  // Result with computed root
+type OverlayState struct { ... }  // Overlay for accumulating and computing changes
 ```
 
 ### Helper Functions
