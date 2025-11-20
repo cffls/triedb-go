@@ -459,3 +459,219 @@ func copyBytesToC(dst *C.uint8_t, src []byte, n int) {
 		*(*C.uint8_t)(unsafe.Pointer(uintptr(unsafe.Pointer(dst)) + uintptr(i))) = C.uint8_t(src[i])
 	}
 }
+
+// ============================================================================
+// Overlay State Operations
+// ============================================================================
+
+// OverlayState represents an overlay state for accumulating and computing state changes
+type OverlayState struct {
+	mutPtr    *C.TrieDBOverlayStateMut
+	frozenPtr *C.TrieDBOverlayState
+}
+
+// OverlayedRoot represents the result of computing a state root with overlay
+type OverlayedRoot struct {
+	ptr *C.TrieDBOverlayedRoot
+}
+
+// NewOverlayState creates a new overlay state
+func NewOverlayState() (*OverlayState, error) {
+	var ptr *C.TrieDBOverlayStateMut
+	err := mapError(uint32(C.triedb_overlay_mut_new(&ptr)))
+	if err != nil {
+		return nil, err
+	}
+	return &OverlayState{mutPtr: ptr, frozenPtr: nil}, nil
+}
+
+// NewOverlayStateWithCapacity creates a new overlay state with the specified capacity
+func NewOverlayStateWithCapacity(capacity int) (*OverlayState, error) {
+	var ptr *C.TrieDBOverlayStateMut
+	err := mapError(uint32(C.triedb_overlay_mut_with_capacity(C.size_t(capacity), &ptr)))
+	if err != nil {
+		return nil, err
+	}
+	return &OverlayState{mutPtr: ptr, frozenPtr: nil}, nil
+}
+
+// InsertAccount inserts an account change into the overlay
+// Pass nil for account to insert a tombstone (deletion)
+func (o *OverlayState) InsertAccount(addr Address, account *Account) error {
+	if o.frozenPtr != nil {
+		return errors.New("cannot insert into frozen overlay")
+	}
+	if o.mutPtr == nil {
+		return ErrNullPointer
+	}
+	var cAddr C.CAddress
+	copyBytesToC(&cAddr.bytes[0], addr[:], AddressLength)
+
+	if account == nil {
+		// Insert tombstone
+		err := mapError(uint32(C.triedb_overlay_mut_insert_account(o.mutPtr, &cAddr, nil)))
+		return err
+	}
+
+	// Insert account
+	var cAccount C.CAccount
+	cAccount.nonce = C.uint64_t(account.Nonce)
+
+	// Convert balance to big-endian bytes
+	balanceBytes := account.Balance.Bytes32()
+	copyBytesToC(&cAccount.balance[0], balanceBytes[:], HashLength)
+
+	copyBytesToC(&cAccount.storage_root[0], account.StorageRoot[:], HashLength)
+	copyBytesToC(&cAccount.code_hash[0], account.CodeHash[:], HashLength)
+
+	err := mapError(uint32(C.triedb_overlay_mut_insert_account(o.mutPtr, &cAddr, &cAccount)))
+	return err
+}
+
+// InsertStorage inserts a storage slot change into the overlay
+// Pass nil for value to insert a tombstone (deletion)
+func (o *OverlayState) InsertStorage(addr Address, slot Hash, value *uint256.Int) error {
+	if o.frozenPtr != nil {
+		return errors.New("cannot insert into frozen overlay")
+	}
+	if o.mutPtr == nil {
+		return ErrNullPointer
+	}
+	var cAddr C.CAddress
+	copyBytesToC(&cAddr.bytes[0], addr[:], AddressLength)
+
+	var cSlot C.CStorageKey
+	copyBytesToC(&cSlot.bytes[0], slot[:], HashLength)
+
+	if value == nil {
+		// Insert tombstone
+		err := mapError(uint32(C.triedb_overlay_mut_insert_storage(o.mutPtr, &cAddr, &cSlot, nil)))
+		return err
+	}
+
+	// Insert storage value
+	var cValue C.CStorageValue
+	valueBytes := value.Bytes32()
+	copyBytesToC(&cValue.bytes[0], valueBytes[:], HashLength)
+
+	err := mapError(uint32(C.triedb_overlay_mut_insert_storage(o.mutPtr, &cAddr, &cSlot, &cValue)))
+	return err
+}
+
+// Len returns the number of changes in the overlay
+func (o *OverlayState) Len() (int, error) {
+	var length C.size_t
+	var err error
+
+	if o.frozenPtr != nil {
+		err = mapError(uint32(C.triedb_overlay_len(o.frozenPtr, &length)))
+	} else if o.mutPtr != nil {
+		err = mapError(uint32(C.triedb_overlay_mut_len(o.mutPtr, &length)))
+	} else {
+		return 0, ErrNullPointer
+	}
+
+	if err != nil {
+		return 0, err
+	}
+	return int(length), nil
+}
+
+// IsEmpty checks if the overlay is empty
+func (o *OverlayState) IsEmpty() (bool, error) {
+	var isEmpty C.bool
+	var err error
+
+	if o.frozenPtr != nil {
+		err = mapError(uint32(C.triedb_overlay_is_empty(o.frozenPtr, &isEmpty)))
+	} else if o.mutPtr != nil {
+		err = mapError(uint32(C.triedb_overlay_mut_is_empty(o.mutPtr, &isEmpty)))
+	} else {
+		return false, ErrNullPointer
+	}
+
+	if err != nil {
+		return false, err
+	}
+	return bool(isEmpty), nil
+}
+
+// Freeze freezes the overlay into an immutable, sorted state
+// This is automatically called when computing the root if not already frozen
+func (o *OverlayState) Freeze() error {
+	if o.frozenPtr != nil {
+		// Already frozen
+		return nil
+	}
+	if o.mutPtr == nil {
+		return ErrNullPointer
+	}
+
+	var ptr *C.TrieDBOverlayState
+	err := mapError(uint32(C.triedb_overlay_mut_freeze(o.mutPtr, &ptr)))
+	if err != nil {
+		return err
+	}
+
+	// Transition from mutable to frozen
+	o.frozenPtr = ptr
+	o.mutPtr = nil
+	return nil
+}
+
+// Close frees the overlay
+func (o *OverlayState) Close() error {
+	if o.frozenPtr != nil {
+		err := mapError(uint32(C.triedb_overlay_free(o.frozenPtr)))
+		o.frozenPtr = nil
+		return err
+	}
+	if o.mutPtr != nil {
+		err := mapError(uint32(C.triedb_overlay_mut_free(o.mutPtr)))
+		o.mutPtr = nil
+		return err
+	}
+	return nil
+}
+
+// ComputeRootWithOverlay computes what the state root would be if the overlay changes were applied
+// This does not modify the database, it only computes the new root hash
+// The overlay will be automatically frozen if not already frozen
+func (tx *TransactionRO) ComputeRootWithOverlay(overlay *OverlayState) (*OverlayedRoot, error) {
+	// Auto-freeze if needed
+	if overlay.frozenPtr == nil {
+		if err := overlay.Freeze(); err != nil {
+			return nil, err
+		}
+	}
+
+	var ptr *C.TrieDBOverlayedRoot
+	err := mapError(uint32(C.triedb_ro_compute_root_with_overlay(tx.ptr, overlay.frozenPtr, &ptr)))
+	if err != nil {
+		return nil, err
+	}
+	return &OverlayedRoot{ptr: ptr}, nil
+}
+
+// Root returns the computed state root hash
+func (r *OverlayedRoot) Root() (Hash, error) {
+	var hash C.CHash
+	err := mapError(uint32(C.triedb_overlayed_root_hash(r.ptr, &hash)))
+	if err != nil {
+		return Hash{}, err
+	}
+
+	var result Hash
+	copy(result[:], C.GoBytes(unsafe.Pointer(&hash.bytes[0]), C.int(HashLength)))
+	return result, nil
+}
+
+// Close frees the overlayed root
+func (r *OverlayedRoot) Close() error {
+	if r.ptr == nil {
+		return nil
+	}
+	err := mapError(uint32(C.triedb_overlayed_root_free(r.ptr)))
+	r.ptr = nil
+	return err
+}

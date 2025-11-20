@@ -2,8 +2,10 @@ use std::ffi::{c_char, CStr};
 use std::sync::Arc;
 
 use alloy_primitives::{Address, StorageKey, B256, U256};
+use alloy_trie::Nibbles;
 use triedb::{
     account::Account,
+    overlay::{OverlayState, OverlayStateMut, OverlayValue},
     path::{AddressPath, StoragePath},
     transaction::{Transaction, RO, RW},
     Database,
@@ -41,6 +43,20 @@ pub struct TrieDBTransactionRO {
 
 pub struct TrieDBTransactionRW {
     inner: Option<Transaction<Arc<Database>, RW>>,
+}
+
+pub struct TrieDBOverlayStateMut {
+    inner: OverlayStateMut,
+}
+
+pub struct TrieDBOverlayState {
+    inner: OverlayState,
+}
+
+pub struct TrieDBOverlayedRoot {
+    pub root: CHash,
+    // We keep the internal data private for now
+    inner: triedb::storage::overlay_root::OverlayedRoot,
 }
 
 // ============================================================================
@@ -620,6 +636,330 @@ pub unsafe extern "C" fn triedb_rw_rollback(tx: *mut TrieDBTransactionRW) -> Tri
     } else {
         TrieDBError::TransactionFailed
     }
+}
+
+// ============================================================================
+// Overlay State Operations
+// ============================================================================
+
+/// Creates a new mutable overlay state.
+///
+/// # Safety
+/// - `out_overlay` must be a valid pointer
+/// - Caller must call `triedb_overlay_mut_free` to free resources
+#[no_mangle]
+pub unsafe extern "C" fn triedb_overlay_mut_new(
+    out_overlay: *mut *mut TrieDBOverlayStateMut,
+) -> TrieDBError {
+    if out_overlay.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let overlay = OverlayStateMut::new();
+    let boxed = Box::new(TrieDBOverlayStateMut { inner: overlay });
+    *out_overlay = Box::into_raw(boxed);
+    TrieDBError::Success
+}
+
+/// Creates a new mutable overlay state with the specified capacity.
+///
+/// # Safety
+/// - `out_overlay` must be a valid pointer
+/// - Caller must call `triedb_overlay_mut_free` to free resources
+#[no_mangle]
+pub unsafe extern "C" fn triedb_overlay_mut_with_capacity(
+    capacity: usize,
+    out_overlay: *mut *mut TrieDBOverlayStateMut,
+) -> TrieDBError {
+    if out_overlay.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let overlay = OverlayStateMut::with_capacity(capacity);
+    let boxed = Box::new(TrieDBOverlayStateMut { inner: overlay });
+    *out_overlay = Box::into_raw(boxed);
+    TrieDBError::Success
+}
+
+/// Inserts an account change into the mutable overlay.
+///
+/// # Safety
+/// - `overlay` must be a valid pointer
+/// - `address` must be a valid pointer to a 20-byte array
+/// - `account` must be a valid pointer (or NULL for tombstone/deletion)
+#[no_mangle]
+pub unsafe extern "C" fn triedb_overlay_mut_insert_account(
+    overlay: *mut TrieDBOverlayStateMut,
+    address: *const CAddress,
+    account: *const CAccount,
+) -> TrieDBError {
+    if overlay.is_null() || address.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let overlay_ref = &mut *overlay;
+    let addr = Address::from_slice(&(*address).bytes);
+    let path = AddressPath::for_address(addr);
+    let nibbles: Nibbles = path.into();
+
+    let value = if account.is_null() {
+        None
+    } else {
+        let balance = U256::from_be_slice(&(*account).balance);
+        let storage_root = B256::from_slice(&(*account).storage_root);
+        let code_hash = B256::from_slice(&(*account).code_hash);
+        let acc = Account::new((*account).nonce, balance, storage_root, code_hash);
+        Some(OverlayValue::Account(acc))
+    };
+
+    overlay_ref.inner.insert(nibbles, value);
+    TrieDBError::Success
+}
+
+/// Inserts a storage slot change into the mutable overlay.
+///
+/// # Safety
+/// - `overlay` must be a valid pointer
+/// - `address` must be a valid pointer to a 20-byte array
+/// - `slot` must be a valid pointer to a 32-byte array
+/// - `value` must be a valid pointer (or NULL for tombstone/deletion)
+#[no_mangle]
+pub unsafe extern "C" fn triedb_overlay_mut_insert_storage(
+    overlay: *mut TrieDBOverlayStateMut,
+    address: *const CAddress,
+    slot: *const CStorageKey,
+    value: *const CStorageValue,
+) -> TrieDBError {
+    if overlay.is_null() || address.is_null() || slot.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let overlay_ref = &mut *overlay;
+    let addr = Address::from_slice(&(*address).bytes);
+    let slot_key = StorageKey::from_slice(&(*slot).bytes);
+    let path = StoragePath::for_address_and_slot(addr, slot_key);
+    let nibbles: Nibbles = path.into();
+
+    let val = if value.is_null() {
+        None
+    } else {
+        Some(OverlayValue::Storage(U256::from_be_bytes((*value).bytes)))
+    };
+
+    overlay_ref.inner.insert(nibbles, val);
+    TrieDBError::Success
+}
+
+/// Returns the number of changes in the mutable overlay.
+///
+/// # Safety
+/// - `overlay` must be a valid pointer
+/// - `out_len` must be a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn triedb_overlay_mut_len(
+    overlay: *const TrieDBOverlayStateMut,
+    out_len: *mut usize,
+) -> TrieDBError {
+    if overlay.is_null() || out_len.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let overlay_ref = &*overlay;
+    *out_len = overlay_ref.inner.len();
+    TrieDBError::Success
+}
+
+/// Checks if the mutable overlay is empty.
+///
+/// # Safety
+/// - `overlay` must be a valid pointer
+/// - `out_is_empty` must be a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn triedb_overlay_mut_is_empty(
+    overlay: *const TrieDBOverlayStateMut,
+    out_is_empty: *mut bool,
+) -> TrieDBError {
+    if overlay.is_null() || out_is_empty.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let overlay_ref = &*overlay;
+    *out_is_empty = overlay_ref.inner.is_empty();
+    TrieDBError::Success
+}
+
+/// Freezes a mutable overlay into an immutable overlay.
+/// This consumes the mutable overlay.
+///
+/// # Safety
+/// - `overlay` must be a valid pointer
+/// - `out_frozen` must be a valid pointer
+/// - `overlay` must not be used after this call
+#[no_mangle]
+pub unsafe extern "C" fn triedb_overlay_mut_freeze(
+    overlay: *mut TrieDBOverlayStateMut,
+    out_frozen: *mut *mut TrieDBOverlayState,
+) -> TrieDBError {
+    if overlay.is_null() || out_frozen.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let overlay_box = Box::from_raw(overlay);
+    let frozen = overlay_box.inner.freeze();
+    let boxed = Box::new(TrieDBOverlayState { inner: frozen });
+    *out_frozen = Box::into_raw(boxed);
+    TrieDBError::Success
+}
+
+/// Frees a mutable overlay without freezing.
+///
+/// # Safety
+/// - `overlay` must be a valid pointer
+/// - `overlay` must not be used after this call
+#[no_mangle]
+pub unsafe extern "C" fn triedb_overlay_mut_free(
+    overlay: *mut TrieDBOverlayStateMut,
+) -> TrieDBError {
+    if overlay.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let _ = Box::from_raw(overlay);
+    TrieDBError::Success
+}
+
+/// Frees an immutable overlay.
+///
+/// # Safety
+/// - `overlay` must be a valid pointer
+/// - `overlay` must not be used after this call
+#[no_mangle]
+pub unsafe extern "C" fn triedb_overlay_free(overlay: *mut TrieDBOverlayState) -> TrieDBError {
+    if overlay.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let _ = Box::from_raw(overlay);
+    TrieDBError::Success
+}
+
+/// Returns the number of changes in the immutable overlay.
+///
+/// # Safety
+/// - `overlay` must be a valid pointer
+/// - `out_len` must be a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn triedb_overlay_len(
+    overlay: *const TrieDBOverlayState,
+    out_len: *mut usize,
+) -> TrieDBError {
+    if overlay.is_null() || out_len.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let overlay_ref = &*overlay;
+    *out_len = overlay_ref.inner.len();
+    TrieDBError::Success
+}
+
+/// Checks if the immutable overlay is empty.
+///
+/// # Safety
+/// - `overlay` must be a valid pointer
+/// - `out_is_empty` must be a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn triedb_overlay_is_empty(
+    overlay: *const TrieDBOverlayState,
+    out_is_empty: *mut bool,
+) -> TrieDBError {
+    if overlay.is_null() || out_is_empty.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let overlay_ref = &*overlay;
+    *out_is_empty = overlay_ref.inner.is_empty();
+    TrieDBError::Success
+}
+
+/// Computes the state root with overlay changes applied.
+/// This is the main function for computing what the new state root would be
+/// if the overlay changes were committed.
+///
+/// # Safety
+/// - `tx` must be a valid read-only transaction pointer
+/// - `overlay` must be a valid pointer
+/// - `out_root` must be a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn triedb_ro_compute_root_with_overlay(
+    tx: *mut TrieDBTransactionRO,
+    overlay: *const TrieDBOverlayState,
+    out_root: *mut *mut TrieDBOverlayedRoot,
+) -> TrieDBError {
+    if tx.is_null() || overlay.is_null() || out_root.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let tx_ref = &mut *tx;
+    let tx_inner = match tx_ref.inner.as_mut() {
+        Some(t) => t,
+        None => return TrieDBError::TransactionFailed,
+    };
+
+    let overlay_ref = &*overlay;
+    let overlay_state = overlay_ref.inner.clone();
+
+    match tx_inner.compute_root_with_overlay(overlay_state) {
+        Ok(overlayed_root) => {
+            let mut c_root = CHash { bytes: [0u8; 32] };
+            c_root.bytes.copy_from_slice(overlayed_root.root.as_slice());
+
+            let boxed = Box::new(TrieDBOverlayedRoot {
+                root: c_root,
+                inner: overlayed_root,
+            });
+            *out_root = Box::into_raw(boxed);
+            TrieDBError::Success
+        }
+        Err(_) => TrieDBError::TransactionFailed,
+    }
+}
+
+/// Gets the root hash from an overlayed root result.
+///
+/// # Safety
+/// - `overlayed_root` must be a valid pointer
+/// - `out_root` must be a valid pointer to a 32-byte array
+#[no_mangle]
+pub unsafe extern "C" fn triedb_overlayed_root_hash(
+    overlayed_root: *const TrieDBOverlayedRoot,
+    out_root: *mut CHash,
+) -> TrieDBError {
+    if overlayed_root.is_null() || out_root.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let overlayed_root_ref = &*overlayed_root;
+    (*out_root)
+        .bytes
+        .copy_from_slice(&overlayed_root_ref.root.bytes);
+    TrieDBError::Success
+}
+
+/// Frees an overlayed root.
+///
+/// # Safety
+/// - `overlayed_root` must be a valid pointer
+/// - `overlayed_root` must not be used after this call
+#[no_mangle]
+pub unsafe extern "C" fn triedb_overlayed_root_free(
+    overlayed_root: *mut TrieDBOverlayedRoot,
+) -> TrieDBError {
+    if overlayed_root.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let _ = Box::from_raw(overlayed_root);
+    TrieDBError::Success
 }
 
 // ============================================================================

@@ -202,6 +202,52 @@ err = tx.Commit()
 err = tx.Rollback()
 ```
 
+### Overlay State (State Root Computation)
+
+The overlay feature allows you to compute what the state root would be after applying a set of changes, without actually modifying the database. This is useful for transaction simulation, gas estimation, and optimistic execution.
+
+```go
+// Create an overlay to accumulate changes
+overlay, err := triedb.NewOverlayState()
+defer overlay.Close()
+
+// Or with pre-allocated capacity for better performance
+overlay, err := triedb.NewOverlayStateWithCapacity(1000)
+
+// Insert account changes
+err = overlay.InsertAccount(addr1, account1)
+err = overlay.InsertAccount(addr2, account2)
+
+// Insert storage changes
+err = overlay.InsertStorage(addr1, slot1, value1)
+err = overlay.InsertStorage(addr1, slot2, value2)
+
+// Insert deletions (tombstones)
+err = overlay.InsertAccount(addr3, nil)  // Delete account
+err = overlay.InsertStorage(addr1, slot3, nil)  // Delete storage slot
+
+// Check overlay state
+length, err := overlay.Len()
+isEmpty, err := overlay.IsEmpty()
+
+// Compute the new state root with a read-only transaction
+// The overlay is automatically frozen when needed
+tx, err := db.BeginRO()
+result, err := tx.ComputeRootWithOverlay(overlay)
+defer result.Close()
+
+// Get the computed root
+newRoot, err := result.Root()
+
+// The database remains unchanged - changes are only in the overlay
+```
+
+**Use Cases:**
+- **Transaction Simulation**: Compute the resulting state root without committing
+- **Gas Estimation**: Test multiple transaction orderings efficiently
+- **Optimistic Execution**: Speculatively compute state while previous blocks finalize
+- **State Prediction**: Preview state changes for UI/API responses
+
 ### Types
 
 ```go
@@ -214,6 +260,10 @@ type Account struct {
     StorageRoot Hash
     CodeHash    []byte
 }
+
+// Overlay types
+type OverlayState struct { ... }   // Overlay for accumulating and computing changes
+type OverlayedRoot struct { ... }  // Result with computed root
 ```
 
 ### Helper Functions

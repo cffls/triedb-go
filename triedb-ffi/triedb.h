@@ -26,6 +26,12 @@ typedef enum triedb_error_t {
 
 typedef struct TrieDB TrieDB;
 
+typedef struct TrieDBOverlayState TrieDBOverlayState;
+
+typedef struct TrieDBOverlayStateMut TrieDBOverlayStateMut;
+
+typedef struct TrieDBOverlayedRoot TrieDBOverlayedRoot;
+
 typedef struct TrieDBTransactionRO TrieDBTransactionRO;
 
 typedef struct TrieDBTransactionRW TrieDBTransactionRW;
@@ -238,6 +244,154 @@ enum triedb_error_t triedb_rw_commit(struct TrieDBTransactionRW *tx);
  * - `tx` must not be used after this call
  */
 enum triedb_error_t triedb_rw_rollback(struct TrieDBTransactionRW *tx);
+
+/**
+ * Creates a new mutable overlay state.
+ *
+ * # Safety
+ * - `out_overlay` must be a valid pointer
+ * - Caller must call `triedb_overlay_mut_free` to free resources
+ */
+enum triedb_error_t triedb_overlay_mut_new(struct TrieDBOverlayStateMut **out_overlay);
+
+/**
+ * Creates a new mutable overlay state with the specified capacity.
+ *
+ * # Safety
+ * - `out_overlay` must be a valid pointer
+ * - Caller must call `triedb_overlay_mut_free` to free resources
+ */
+enum triedb_error_t triedb_overlay_mut_with_capacity(uintptr_t capacity,
+                                                     struct TrieDBOverlayStateMut **out_overlay);
+
+/**
+ * Inserts an account change into the mutable overlay.
+ *
+ * # Safety
+ * - `overlay` must be a valid pointer
+ * - `address` must be a valid pointer to a 20-byte array
+ * - `account` must be a valid pointer (or NULL for tombstone/deletion)
+ */
+enum triedb_error_t triedb_overlay_mut_insert_account(struct TrieDBOverlayStateMut *overlay,
+                                                      const struct CAddress *address,
+                                                      const struct CAccount *account);
+
+/**
+ * Inserts a storage slot change into the mutable overlay.
+ *
+ * # Safety
+ * - `overlay` must be a valid pointer
+ * - `address` must be a valid pointer to a 20-byte array
+ * - `slot` must be a valid pointer to a 32-byte array
+ * - `value` must be a valid pointer (or NULL for tombstone/deletion)
+ */
+enum triedb_error_t triedb_overlay_mut_insert_storage(struct TrieDBOverlayStateMut *overlay,
+                                                      const struct CAddress *address,
+                                                      const struct CStorageKey *slot,
+                                                      const struct CStorageValue *value);
+
+/**
+ * Returns the number of changes in the mutable overlay.
+ *
+ * # Safety
+ * - `overlay` must be a valid pointer
+ * - `out_len` must be a valid pointer
+ */
+enum triedb_error_t triedb_overlay_mut_len(const struct TrieDBOverlayStateMut *overlay,
+                                           uintptr_t *out_len);
+
+/**
+ * Checks if the mutable overlay is empty.
+ *
+ * # Safety
+ * - `overlay` must be a valid pointer
+ * - `out_is_empty` must be a valid pointer
+ */
+enum triedb_error_t triedb_overlay_mut_is_empty(const struct TrieDBOverlayStateMut *overlay,
+                                                bool *out_is_empty);
+
+/**
+ * Freezes a mutable overlay into an immutable overlay.
+ * This consumes the mutable overlay.
+ *
+ * # Safety
+ * - `overlay` must be a valid pointer
+ * - `out_frozen` must be a valid pointer
+ * - `overlay` must not be used after this call
+ */
+enum triedb_error_t triedb_overlay_mut_freeze(struct TrieDBOverlayStateMut *overlay,
+                                              struct TrieDBOverlayState **out_frozen);
+
+/**
+ * Frees a mutable overlay without freezing.
+ *
+ * # Safety
+ * - `overlay` must be a valid pointer
+ * - `overlay` must not be used after this call
+ */
+enum triedb_error_t triedb_overlay_mut_free(struct TrieDBOverlayStateMut *overlay);
+
+/**
+ * Frees an immutable overlay.
+ *
+ * # Safety
+ * - `overlay` must be a valid pointer
+ * - `overlay` must not be used after this call
+ */
+enum triedb_error_t triedb_overlay_free(struct TrieDBOverlayState *overlay);
+
+/**
+ * Returns the number of changes in the immutable overlay.
+ *
+ * # Safety
+ * - `overlay` must be a valid pointer
+ * - `out_len` must be a valid pointer
+ */
+enum triedb_error_t triedb_overlay_len(const struct TrieDBOverlayState *overlay,
+                                       uintptr_t *out_len);
+
+/**
+ * Checks if the immutable overlay is empty.
+ *
+ * # Safety
+ * - `overlay` must be a valid pointer
+ * - `out_is_empty` must be a valid pointer
+ */
+enum triedb_error_t triedb_overlay_is_empty(const struct TrieDBOverlayState *overlay,
+                                            bool *out_is_empty);
+
+/**
+ * Computes the state root with overlay changes applied.
+ * This is the main function for computing what the new state root would be
+ * if the overlay changes were committed.
+ *
+ * # Safety
+ * - `tx` must be a valid read-only transaction pointer
+ * - `overlay` must be a valid pointer
+ * - `out_root` must be a valid pointer
+ */
+enum triedb_error_t triedb_ro_compute_root_with_overlay(struct TrieDBTransactionRO *tx,
+                                                        const struct TrieDBOverlayState *overlay,
+                                                        struct TrieDBOverlayedRoot **out_root);
+
+/**
+ * Gets the root hash from an overlayed root result.
+ *
+ * # Safety
+ * - `overlayed_root` must be a valid pointer
+ * - `out_root` must be a valid pointer to a 32-byte array
+ */
+enum triedb_error_t triedb_overlayed_root_hash(const struct TrieDBOverlayedRoot *overlayed_root,
+                                               struct CHash *out_root);
+
+/**
+ * Frees an overlayed root.
+ *
+ * # Safety
+ * - `overlayed_root` must be a valid pointer
+ * - `overlayed_root` must not be used after this call
+ */
+enum triedb_error_t triedb_overlayed_root_free(struct TrieDBOverlayedRoot *overlayed_root);
 
 /**
  * Returns a human-readable error message for an error code.

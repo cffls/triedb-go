@@ -1003,3 +1003,626 @@ func BenchmarkCompareInMemoryRead(b *testing.B) {
 		}
 	})
 }
+
+// ============================================================================
+// Overlay State Tests
+// ============================================================================
+
+func TestOverlayStateMut_Basic(t *testing.T) {
+	overlay, err := NewOverlayState()
+	if err != nil {
+		t.Fatalf("Failed to create overlay: %v", err)
+	}
+	defer overlay.Close()
+
+	// Check initial state
+	isEmpty, err := overlay.IsEmpty()
+	if err != nil {
+		t.Fatalf("Failed to check if empty: %v", err)
+	}
+	if !isEmpty {
+		t.Error("Expected overlay to be empty initially")
+	}
+
+	length, err := overlay.Len()
+	if err != nil {
+		t.Fatalf("Failed to get length: %v", err)
+	}
+	if length != 0 {
+		t.Errorf("Expected length 0, got %d", length)
+	}
+
+	// Insert an account
+	addr := randomAddress()
+	account := createTestAccount(1)
+	err = overlay.InsertAccount(addr, account)
+	if err != nil {
+		t.Fatalf("Failed to insert account: %v", err)
+	}
+
+	// Check state after insertion
+	isEmpty, err = overlay.IsEmpty()
+	if err != nil {
+		t.Fatalf("Failed to check if empty: %v", err)
+	}
+	if isEmpty {
+		t.Error("Expected overlay to not be empty after insertion")
+	}
+
+	length, err = overlay.Len()
+	if err != nil {
+		t.Fatalf("Failed to get length: %v", err)
+	}
+	if length != 1 {
+		t.Errorf("Expected length 1, got %d", length)
+	}
+}
+
+func TestOverlayStateMut_WithCapacity(t *testing.T) {
+	overlay, err := NewOverlayStateWithCapacity(100)
+	if err != nil {
+		t.Fatalf("Failed to create overlay with capacity: %v", err)
+	}
+	defer overlay.Close()
+
+	isEmpty, err := overlay.IsEmpty()
+	if err != nil {
+		t.Fatalf("Failed to check if empty: %v", err)
+	}
+	if !isEmpty {
+		t.Error("Expected overlay to be empty initially")
+	}
+}
+
+func TestOverlayStateMut_InsertMultipleAccounts(t *testing.T) {
+	overlay, err := NewOverlayState()
+	if err != nil {
+		t.Fatalf("Failed to create overlay: %v", err)
+	}
+	defer overlay.Close()
+
+	numAccounts := 10
+	for i := 0; i < numAccounts; i++ {
+		addr := randomAddress()
+		account := createTestAccount(uint64(i))
+		err = overlay.InsertAccount(addr, account)
+		if err != nil {
+			t.Fatalf("Failed to insert account %d: %v", i, err)
+		}
+	}
+
+	length, err := overlay.Len()
+	if err != nil {
+		t.Fatalf("Failed to get length: %v", err)
+	}
+	if length != numAccounts {
+		t.Errorf("Expected length %d, got %d", numAccounts, length)
+	}
+}
+
+func TestOverlayStateMut_InsertStorage(t *testing.T) {
+	overlay, err := NewOverlayState()
+	if err != nil {
+		t.Fatalf("Failed to create overlay: %v", err)
+	}
+	defer overlay.Close()
+
+	addr := randomAddress()
+	slot := randomHash()
+	value := uint256.NewInt(12345)
+
+	err = overlay.InsertStorage(addr, slot, value)
+	if err != nil {
+		t.Fatalf("Failed to insert storage: %v", err)
+	}
+
+	length, err := overlay.Len()
+	if err != nil {
+		t.Fatalf("Failed to get length: %v", err)
+	}
+	if length != 1 {
+		t.Errorf("Expected length 1, got %d", length)
+	}
+}
+
+func TestOverlayStateMut_InsertTombstones(t *testing.T) {
+	overlay, err := NewOverlayState()
+	if err != nil {
+		t.Fatalf("Failed to create overlay: %v", err)
+	}
+	defer overlay.Close()
+
+	addr := randomAddress()
+	slot := randomHash()
+
+	// Insert account tombstone
+	err = overlay.InsertAccount(addr, nil)
+	if err != nil {
+		t.Fatalf("Failed to insert account tombstone: %v", err)
+	}
+
+	// Insert storage tombstone
+	err = overlay.InsertStorage(addr, slot, nil)
+	if err != nil {
+		t.Fatalf("Failed to insert storage tombstone: %v", err)
+	}
+
+	length, err := overlay.Len()
+	if err != nil {
+		t.Fatalf("Failed to get length: %v", err)
+	}
+	if length != 2 {
+		t.Errorf("Expected length 2, got %d", length)
+	}
+}
+
+func TestOverlayStateMut_Freeze(t *testing.T) {
+	overlay, err := NewOverlayState()
+	if err != nil {
+		t.Fatalf("Failed to create overlay: %v", err)
+	}
+	defer overlay.Close()
+
+	// Insert some changes
+	for i := 0; i < 5; i++ {
+		addr := randomAddress()
+		account := createTestAccount(uint64(i))
+		err = overlay.InsertAccount(addr, account)
+		if err != nil {
+			t.Fatalf("Failed to insert account %d: %v", i, err)
+		}
+	}
+
+	// Freeze the overlay
+	err = overlay.Freeze()
+	if err != nil {
+		t.Fatalf("Failed to freeze overlay: %v", err)
+	}
+
+	// Check that the mutable pointer is consumed
+	if overlay.mutPtr != nil {
+		t.Error("Expected mutPtr to be nil after freeze")
+	}
+	if overlay.frozenPtr == nil {
+		t.Error("Expected frozenPtr to be set after freeze")
+	}
+
+	// Check frozen overlay state
+	length, err := overlay.Len()
+	if err != nil {
+		t.Fatalf("Failed to get frozen length: %v", err)
+	}
+	if length != 5 {
+		t.Errorf("Expected frozen length 5, got %d", length)
+	}
+
+	isEmpty, err := overlay.IsEmpty()
+	if err != nil {
+		t.Fatalf("Failed to check if frozen is empty: %v", err)
+	}
+	if isEmpty {
+		t.Error("Expected frozen overlay to not be empty")
+	}
+}
+
+func TestOverlayState_Empty(t *testing.T) {
+	overlay, err := NewOverlayState()
+	if err != nil {
+		t.Fatalf("Failed to create overlay: %v", err)
+	}
+	defer overlay.Close()
+
+	err = overlay.Freeze()
+	if err != nil {
+		t.Fatalf("Failed to freeze overlay: %v", err)
+	}
+
+	isEmpty, err := overlay.IsEmpty()
+	if err != nil {
+		t.Fatalf("Failed to check if empty: %v", err)
+	}
+	if !isEmpty {
+		t.Error("Expected frozen overlay to be empty")
+	}
+
+	length, err := overlay.Len()
+	if err != nil {
+		t.Fatalf("Failed to get length: %v", err)
+	}
+	if length != 0 {
+		t.Errorf("Expected length 0, got %d", length)
+	}
+}
+
+func TestComputeRootWithOverlay_EmptyOverlay(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := CreateNew(tmpDir + "/test.db")
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Get initial state root
+	initialRoot, err := db.StateRoot()
+	if err != nil {
+		t.Fatalf("Failed to get initial state root: %v", err)
+	}
+
+	// Create empty overlay
+	overlay, err := NewOverlayState()
+	if err != nil {
+		t.Fatalf("Failed to create overlay: %v", err)
+	}
+	defer overlay.Close()
+
+	// Begin read-only transaction
+	tx, err := db.BeginRO()
+	if err != nil {
+		t.Fatalf("Failed to begin RO transaction: %v", err)
+	}
+	defer tx.Commit()
+
+	// Compute root with empty overlay (will auto-freeze)
+	result, err := tx.ComputeRootWithOverlay(overlay)
+	if err != nil {
+		t.Fatalf("Failed to compute root with overlay: %v", err)
+	}
+	defer result.Close()
+
+	newRoot, err := result.Root()
+	if err != nil {
+		t.Fatalf("Failed to get root: %v", err)
+	}
+
+	// Empty overlay should not change the root
+	if initialRoot != newRoot {
+		t.Errorf("Expected root %x, got %x", initialRoot, newRoot)
+	}
+}
+
+func TestComputeRootWithOverlay_WithChanges(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := CreateNew(tmpDir + "/test.db")
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Add initial account to database
+	addr1 := randomAddress()
+	account1 := createTestAccount(1)
+
+	tx, err := db.BeginRW()
+	if err != nil {
+		t.Fatalf("Failed to begin RW transaction: %v", err)
+	}
+	err = tx.SetAccount(addr1, account1)
+	if err != nil {
+		t.Fatalf("Failed to set account: %v", err)
+	}
+	err = tx.Commit()
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	// Get root after initial commit
+	rootAfterCommit, err := db.StateRoot()
+	if err != nil {
+		t.Fatalf("Failed to get state root: %v", err)
+	}
+
+	// Create overlay with new account
+	overlay, err := NewOverlayState()
+	if err != nil {
+		t.Fatalf("Failed to create overlay: %v", err)
+	}
+	defer overlay.Close()
+
+	addr2 := randomAddress()
+	account2 := createTestAccount(2)
+	err = overlay.InsertAccount(addr2, account2)
+	if err != nil {
+		t.Fatalf("Failed to insert account: %v", err)
+	}
+
+	// Begin read-only transaction
+	roTx, err := db.BeginRO()
+	if err != nil {
+		t.Fatalf("Failed to begin RO transaction: %v", err)
+	}
+	defer roTx.Commit()
+
+	// Compute root with overlay (will auto-freeze)
+	result, err := roTx.ComputeRootWithOverlay(overlay)
+	if err != nil {
+		t.Fatalf("Failed to compute root with overlay: %v", err)
+	}
+	defer result.Close()
+
+	overlayRoot, err := result.Root()
+	if err != nil {
+		t.Fatalf("Failed to get overlay root: %v", err)
+	}
+
+	// Overlay root should be different from current root
+	if rootAfterCommit == overlayRoot {
+		t.Error("Expected overlay root to be different from committed root")
+	}
+
+	// Now actually commit the same change and verify roots match
+	rwTx, err := db.BeginRW()
+	if err != nil {
+		t.Fatalf("Failed to begin RW transaction: %v", err)
+	}
+	err = rwTx.SetAccount(addr2, account2)
+	if err != nil {
+		t.Fatalf("Failed to set account: %v", err)
+	}
+	err = rwTx.Commit()
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	actualRoot, err := db.StateRoot()
+	if err != nil {
+		t.Fatalf("Failed to get actual root: %v", err)
+	}
+
+	// The overlay root should match the actual committed root
+	if overlayRoot != actualRoot {
+		t.Errorf("Expected overlay root %x to match actual root %x", overlayRoot, actualRoot)
+	}
+}
+
+func TestComputeRootWithOverlay_MultipleChanges(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := CreateNew(tmpDir + "/test.db")
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Create overlay with multiple accounts
+	overlay, err := NewOverlayStateWithCapacity(10)
+	if err != nil {
+		t.Fatalf("Failed to create overlay: %v", err)
+	}
+	defer overlay.Close()
+
+	numAccounts := 5
+	addresses := make([]Address, numAccounts)
+	accounts := make([]*Account, numAccounts)
+
+	for i := 0; i < numAccounts; i++ {
+		addresses[i] = randomAddress()
+		accounts[i] = createTestAccount(uint64(i + 1))
+		err = overlay.InsertAccount(addresses[i], accounts[i])
+		if err != nil {
+			t.Fatalf("Failed to insert account %d: %v", i, err)
+		}
+	}
+
+	// Compute overlay root
+	roTx, err := db.BeginRO()
+	if err != nil {
+		t.Fatalf("Failed to begin RO transaction: %v", err)
+	}
+	defer roTx.Commit()
+
+	result, err := roTx.ComputeRootWithOverlay(overlay)
+	if err != nil {
+		t.Fatalf("Failed to compute root with overlay: %v", err)
+	}
+	defer result.Close()
+
+	overlayRoot, err := result.Root()
+	if err != nil {
+		t.Fatalf("Failed to get overlay root: %v", err)
+	}
+
+	// Commit the same changes
+	rwTx, err := db.BeginRW()
+	if err != nil {
+		t.Fatalf("Failed to begin RW transaction: %v", err)
+	}
+	for i := 0; i < numAccounts; i++ {
+		err = rwTx.SetAccount(addresses[i], accounts[i])
+		if err != nil {
+			t.Fatalf("Failed to set account %d: %v", i, err)
+		}
+	}
+	err = rwTx.Commit()
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	actualRoot, err := db.StateRoot()
+	if err != nil {
+		t.Fatalf("Failed to get actual root: %v", err)
+	}
+
+	// Verify roots match
+	if overlayRoot != actualRoot {
+		t.Errorf("Expected overlay root %x to match actual root %x", overlayRoot, actualRoot)
+	}
+}
+
+func TestComputeRootWithOverlay_WithStorage(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := CreateNew(tmpDir + "/test.db")
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	addr := randomAddress()
+	account := createTestAccount(1)
+
+	// Create account with storage
+	rwTx, err := db.BeginRW()
+	if err != nil {
+		t.Fatalf("Failed to begin RW transaction: %v", err)
+	}
+	err = rwTx.SetAccount(addr, account)
+	if err != nil {
+		t.Fatalf("Failed to set account: %v", err)
+	}
+
+	slot1 := randomHash()
+	value1Uint := uint256.NewInt(100)
+	value1Bytes := value1Uint.Bytes32()
+	value1 := Hash(value1Bytes)
+	err = rwTx.SetStorage(addr, slot1, &value1)
+	if err != nil {
+		t.Fatalf("Failed to set storage: %v", err)
+	}
+
+	err = rwTx.Commit()
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	// Create overlay with new storage slot
+	overlay, err := NewOverlayState()
+	if err != nil {
+		t.Fatalf("Failed to create overlay: %v", err)
+	}
+	defer overlay.Close()
+
+	slot2 := randomHash()
+	value2Uint := uint256.NewInt(200)
+	err = overlay.InsertStorage(addr, slot2, value2Uint)
+	if err != nil {
+		t.Fatalf("Failed to insert storage: %v", err)
+	}
+
+	// Compute overlay root
+	roTx, err := db.BeginRO()
+	if err != nil {
+		t.Fatalf("Failed to begin RO transaction: %v", err)
+	}
+	defer roTx.Commit()
+
+	result, err := roTx.ComputeRootWithOverlay(overlay)
+	if err != nil {
+		t.Fatalf("Failed to compute root with overlay: %v", err)
+	}
+	defer result.Close()
+
+	overlayRoot, err := result.Root()
+	if err != nil {
+		t.Fatalf("Failed to get overlay root: %v", err)
+	}
+
+	// Commit the storage change
+	rwTx2, err := db.BeginRW()
+	if err != nil {
+		t.Fatalf("Failed to begin RW transaction: %v", err)
+	}
+	value2Bytes := value2Uint.Bytes32()
+	value2Hash := Hash(value2Bytes)
+	err = rwTx2.SetStorage(addr, slot2, &value2Hash)
+	if err != nil {
+		t.Fatalf("Failed to set storage: %v", err)
+	}
+	err = rwTx2.Commit()
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	actualRoot, err := db.StateRoot()
+	if err != nil {
+		t.Fatalf("Failed to get actual root: %v", err)
+	}
+
+	// Verify roots match
+	if overlayRoot != actualRoot {
+		t.Errorf("Expected overlay root %x to match actual root %x", overlayRoot, actualRoot)
+	}
+}
+
+func TestComputeRootWithOverlay_Deletions(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := CreateNew(tmpDir + "/test.db")
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Add initial accounts
+	addr1 := randomAddress()
+	addr2 := randomAddress()
+	account1 := createTestAccount(1)
+	account2 := createTestAccount(2)
+
+	rwTx, err := db.BeginRW()
+	if err != nil {
+		t.Fatalf("Failed to begin RW transaction: %v", err)
+	}
+	err = rwTx.SetAccount(addr1, account1)
+	if err != nil {
+		t.Fatalf("Failed to set account1: %v", err)
+	}
+	err = rwTx.SetAccount(addr2, account2)
+	if err != nil {
+		t.Fatalf("Failed to set account2: %v", err)
+	}
+	err = rwTx.Commit()
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	// Create overlay with deletion (tombstone)
+	overlay, err := NewOverlayState()
+	if err != nil {
+		t.Fatalf("Failed to create overlay: %v", err)
+	}
+	defer overlay.Close()
+
+	err = overlay.InsertAccount(addr1, nil) // Delete addr1
+	if err != nil {
+		t.Fatalf("Failed to insert tombstone: %v", err)
+	}
+
+	// Compute overlay root
+	roTx, err := db.BeginRO()
+	if err != nil {
+		t.Fatalf("Failed to begin RO transaction: %v", err)
+	}
+	defer roTx.Commit()
+
+	result, err := roTx.ComputeRootWithOverlay(overlay)
+	if err != nil {
+		t.Fatalf("Failed to compute root with overlay: %v", err)
+	}
+	defer result.Close()
+
+	overlayRoot, err := result.Root()
+	if err != nil {
+		t.Fatalf("Failed to get overlay root: %v", err)
+	}
+
+	// Actually delete the account
+	rwTx2, err := db.BeginRW()
+	if err != nil {
+		t.Fatalf("Failed to begin RW transaction: %v", err)
+	}
+	err = rwTx2.SetAccount(addr1, nil)
+	if err != nil {
+		t.Fatalf("Failed to delete account: %v", err)
+	}
+	err = rwTx2.Commit()
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	actualRoot, err := db.StateRoot()
+	if err != nil {
+		t.Fatalf("Failed to get actual root: %v", err)
+	}
+
+	// Verify roots match
+	if overlayRoot != actualRoot {
+		t.Errorf("Expected overlay root %x to match actual root %x", overlayRoot, actualRoot)
+	}
+}
