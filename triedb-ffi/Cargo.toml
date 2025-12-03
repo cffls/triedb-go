@@ -8,7 +8,7 @@ license.workspace = true
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-triedb = { git = "https://github.com/base/triedb.git", rev = "ee4e382" }
+triedb = { git = "https://github.com/cffls/triedb.git", rev = "488d565" }
 
 alloy-primitives.workspace = true
 alloy-trie.workspace = true
