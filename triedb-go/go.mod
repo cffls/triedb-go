@@ -1,5 +1,5 @@
-module github.com/base/triedb-go
+module github.com/cffls/triedb-go/triedb-go
 
-go 1.21
+go 1.25.5
 
 require github.com/holiman/uint256 v1.3.2
