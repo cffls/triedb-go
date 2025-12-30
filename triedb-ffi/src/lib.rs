@@ -2,11 +2,10 @@ use std::ffi::{c_char, CStr};
 use std::sync::Arc;
 
 use alloy_primitives::{Address, StorageKey, B256, U256};
-use alloy_trie::Nibbles;
 use triedb::{
     account::Account,
     overlay::{OverlayState, OverlayStateMut, OverlayValue},
-    path::{AddressPath, StoragePath},
+    path::{AddressPath, RawPath, StoragePath},
     transaction::{Transaction, RO, RW},
     Database,
 };
@@ -701,7 +700,7 @@ pub unsafe extern "C" fn triedb_overlay_mut_insert_account(
     let overlay_ref = &mut *overlay;
     let addr = Address::from_slice(&(*address).bytes);
     let path = AddressPath::for_address(addr);
-    let nibbles: Nibbles = path.into();
+    let raw_path: RawPath = path.into();
 
     let value = if account.is_null() {
         None
@@ -713,7 +712,7 @@ pub unsafe extern "C" fn triedb_overlay_mut_insert_account(
         Some(OverlayValue::Account(acc))
     };
 
-    overlay_ref.inner.insert(nibbles, value);
+    overlay_ref.inner.insert(raw_path, value);
     TrieDBError::Success
 }
 
@@ -739,7 +738,7 @@ pub unsafe extern "C" fn triedb_overlay_mut_insert_storage(
     let addr = Address::from_slice(&(*address).bytes);
     let slot_key = StorageKey::from_slice(&(*slot).bytes);
     let path = StoragePath::for_address_and_slot(addr, slot_key);
-    let nibbles: Nibbles = path.into();
+    let raw_path: RawPath = path.into();
 
     let val = if value.is_null() {
         None
@@ -747,7 +746,7 @@ pub unsafe extern "C" fn triedb_overlay_mut_insert_storage(
         Some(OverlayValue::Storage(U256::from_be_bytes((*value).bytes)))
     };
 
-    overlay_ref.inner.insert(nibbles, val);
+    overlay_ref.inner.insert(raw_path, val);
     TrieDBError::Success
 }
 
