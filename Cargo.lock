@@ -83,11 +83,27 @@ checksum = "983d99aa81f586cef9dae38443245e585840fcf0fc58b09aee0b1f27aed1d500"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
+ "arrayvec",
+ "derive_more",
+ "nybbles 0.3.4",
+ "serde",
+ "smallvec",
+ "tracing",
+]
+
+[[package]]
+name = "alloy-trie"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "428aa0f0e0658ff091f8f667c406e034b431cb10abd39de4f507520968acc499"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
  "arbitrary",
  "arrayvec",
  "derive_arbitrary",
  "derive_more",
- "nybbles",
+ "nybbles 0.4.7",
  "proptest",
  "proptest-derive 0.5.1",
  "serde",
@@ -1124,9 +1140,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8983bb634df7248924ee0c4c3a749609b5abcb082c28fffe3254b3eb3602b307"
 dependencies = [
  "alloy-rlp",
- "arbitrary",
  "const-hex",
  "proptest",
+ "serde",
+ "smallvec",
+]
+
+[[package]]
+name = "nybbles"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b5676b5c379cf5b03da1df2b3061c4a4e2aa691086a56ac923e08c143f53f59"
+dependencies = [
+ "alloy-rlp",
+ "arbitrary",
+ "cfg-if",
+ "proptest",
+ "ruint",
  "serde",
  "smallvec",
 ]
@@ -1923,11 +1953,11 @@ dependencies = [
 [[package]]
 name = "triedb"
 version = "0.1.0"
-source = "git+https://github.com/base/triedb.git?rev=ee4e382#ee4e382f1a1aa0c773d5707156d85e170bfab488"
+source = "git+https://github.com/cffls/triedb.git?rev=67a840f#67a840fe84afcb2277bc91a6ff10a334d2f127e8"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
- "alloy-trie",
+ "alloy-trie 0.9.3",
  "arrayvec",
  "fxhash",
  "memmap2",
@@ -1947,7 +1977,7 @@ name = "triedb-ffi"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
- "alloy-trie",
+ "alloy-trie 0.8.1",
  "cbindgen",
  "triedb",
 ]

@@ -1596,3 +1596,423 @@ func TestComputeRootWithOverlay_Deletions(t *testing.T) {
 		t.Errorf("Expected overlay root %x to match actual root %x", overlayRoot, actualRoot)
 	}
 }
+
+// ============================================================================
+// Upgradable Transaction Tests
+// ============================================================================
+
+func TestUpgradableTransaction_Basic(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := CreateNew(tmpDir + "/test.db")
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	addr := randomAddress()
+	account := createTestAccount(42)
+
+	// Create upgradable transaction
+	tx, err := db.BeginUpgradable()
+	if err != nil {
+		t.Fatalf("Failed to begin upgradable transaction: %v", err)
+	}
+
+	// Set account (changes accumulated in memory)
+	if err := tx.SetAccount(addr, account); err != nil {
+		t.Fatalf("Failed to set account: %v", err)
+	}
+
+	// Compute root (acquires write lock)
+	root, err := tx.ComputeRoot()
+	if err != nil {
+		t.Fatalf("Failed to compute root: %v", err)
+	}
+	if root == (Hash{}) {
+		t.Error("Computed root should not be zero")
+	}
+
+	// Commit
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	// Verify the account was persisted
+	roTx, err := db.BeginRO()
+	if err != nil {
+		t.Fatalf("Failed to begin RO transaction: %v", err)
+	}
+	defer roTx.Commit()
+
+	got, err := roTx.GetAccount(addr)
+	if err != nil {
+		t.Fatalf("Failed to get account: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Account should exist after commit")
+	}
+	if got.Nonce != account.Nonce {
+		t.Errorf("Expected nonce %d, got %d", account.Nonce, got.Nonce)
+	}
+}
+
+func TestUpgradableTransaction_Abort(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := CreateNew(tmpDir + "/test.db")
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	addr := randomAddress()
+	account := createTestAccount(42)
+
+	// Create upgradable transaction
+	tx, err := db.BeginUpgradable()
+	if err != nil {
+		t.Fatalf("Failed to begin upgradable transaction: %v", err)
+	}
+
+	// Set account
+	if err := tx.SetAccount(addr, account); err != nil {
+		t.Fatalf("Failed to set account: %v", err)
+	}
+
+	// Rollback without computing root (no write lock acquired)
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Failed to rollback: %v", err)
+	}
+
+	// Verify the account was not persisted
+	roTx, err := db.BeginRO()
+	if err != nil {
+		t.Fatalf("Failed to begin RO transaction: %v", err)
+	}
+	defer roTx.Commit()
+
+	got, err := roTx.GetAccount(addr)
+	if err != nil {
+		t.Fatalf("Failed to get account: %v", err)
+	}
+	if got != nil {
+		t.Error("Account should not exist after rollback without compute")
+	}
+}
+
+func TestUpgradableTransaction_AbortAfterCompute(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := CreateNew(tmpDir + "/test.db")
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	addr := randomAddress()
+	account := createTestAccount(42)
+
+	// Create upgradable transaction
+	tx, err := db.BeginUpgradable()
+	if err != nil {
+		t.Fatalf("Failed to begin upgradable transaction: %v", err)
+	}
+
+	// Set account
+	if err := tx.SetAccount(addr, account); err != nil {
+		t.Fatalf("Failed to set account: %v", err)
+	}
+
+	// Compute root (acquires write lock)
+	_, err = tx.ComputeRoot()
+	if err != nil {
+		t.Fatalf("Failed to compute root: %v", err)
+	}
+
+	// Rollback after computing root
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Failed to rollback: %v", err)
+	}
+
+	// Verify the account was not persisted
+	roTx, err := db.BeginRO()
+	if err != nil {
+		t.Fatalf("Failed to begin RO transaction: %v", err)
+	}
+	defer roTx.Commit()
+
+	got, err := roTx.GetAccount(addr)
+	if err != nil {
+		t.Fatalf("Failed to get account: %v", err)
+	}
+	if got != nil {
+		t.Error("Account should not exist after rollback with compute")
+	}
+}
+
+func TestUpgradableTransaction_Storage(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := CreateNew(tmpDir + "/test.db")
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	addr := randomAddress()
+	account := createTestAccount(1)
+	slot := randomHash()
+	value := randomHash()
+
+	// First create the account using a RW transaction
+	rwTx, err := db.BeginRW()
+	if err != nil {
+		t.Fatalf("Failed to begin RW transaction: %v", err)
+	}
+	if err := rwTx.SetAccount(addr, account); err != nil {
+		t.Fatalf("Failed to set account: %v", err)
+	}
+	if err := rwTx.Commit(); err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	// Create upgradable transaction to set storage
+	tx, err := db.BeginUpgradable()
+	if err != nil {
+		t.Fatalf("Failed to begin upgradable transaction: %v", err)
+	}
+
+	// Set storage (changes accumulated in memory)
+	if err := tx.SetStorage(addr, slot, &value); err != nil {
+		t.Fatalf("Failed to set storage: %v", err)
+	}
+
+	// Compute root (acquires write lock)
+	_, err = tx.ComputeRoot()
+	if err != nil {
+		t.Fatalf("Failed to compute root: %v", err)
+	}
+
+	// Commit
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	// Verify the storage was persisted
+	roTx, err := db.BeginRO()
+	if err != nil {
+		t.Fatalf("Failed to begin RO transaction: %v", err)
+	}
+	defer roTx.Commit()
+
+	got, err := roTx.GetStorage(addr, slot)
+	if err != nil {
+		t.Fatalf("Failed to get storage: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Storage should exist after commit")
+	}
+	if *got != value {
+		t.Errorf("Expected value %x, got %x", value, *got)
+	}
+}
+
+func TestUpgradableTransaction_StateRootMatchesRW(t *testing.T) {
+	// Create two databases with identical operations
+	// One using RW transaction, one using Upgradable transaction
+	// Verify they produce the same state root
+
+	tmpDir := t.TempDir()
+	db1, err := CreateNew(tmpDir + "/test1.db")
+	if err != nil {
+		t.Fatalf("Failed to open database 1: %v", err)
+	}
+	defer db1.Close()
+
+	db2, err := CreateNew(tmpDir + "/test2.db")
+	if err != nil {
+		t.Fatalf("Failed to open database 2: %v", err)
+	}
+	defer db2.Close()
+
+	// Use same addresses and accounts for both
+	addr1 := randomAddress()
+	addr2 := randomAddress()
+	account1 := createTestAccount(1)
+	account2 := createTestAccount(2)
+
+	// Database 1: Use RW transaction
+	rwTx, err := db1.BeginRW()
+	if err != nil {
+		t.Fatalf("Failed to begin RW transaction: %v", err)
+	}
+	if err := rwTx.SetAccount(addr1, account1); err != nil {
+		t.Fatalf("Failed to set account 1: %v", err)
+	}
+	if err := rwTx.SetAccount(addr2, account2); err != nil {
+		t.Fatalf("Failed to set account 2: %v", err)
+	}
+	if err := rwTx.Commit(); err != nil {
+		t.Fatalf("Failed to commit RW: %v", err)
+	}
+
+	root1, err := db1.StateRoot()
+	if err != nil {
+		t.Fatalf("Failed to get state root 1: %v", err)
+	}
+
+	// Database 2: Use Upgradable transaction
+	upgTx, err := db2.BeginUpgradable()
+	if err != nil {
+		t.Fatalf("Failed to begin upgradable transaction: %v", err)
+	}
+	if err := upgTx.SetAccount(addr1, account1); err != nil {
+		t.Fatalf("Failed to set account 1: %v", err)
+	}
+	if err := upgTx.SetAccount(addr2, account2); err != nil {
+		t.Fatalf("Failed to set account 2: %v", err)
+	}
+	root2, err := upgTx.ComputeRoot()
+	if err != nil {
+		t.Fatalf("Failed to compute root: %v", err)
+	}
+	if err := upgTx.Commit(); err != nil {
+		t.Fatalf("Failed to commit upgradable: %v", err)
+	}
+
+	// Verify roots match
+	if root1 != root2 {
+		t.Errorf("RW root %x != Upgradable root %x", root1, root2)
+	}
+
+	// Also verify database state root matches
+	root2Actual, err := db2.StateRoot()
+	if err != nil {
+		t.Fatalf("Failed to get state root 2: %v", err)
+	}
+	if root1 != root2Actual {
+		t.Errorf("RW root %x != Upgradable db root %x", root1, root2Actual)
+	}
+}
+
+func TestUpgradableTransaction_GetAccountBeforeCommit(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := CreateNew(tmpDir + "/test.db")
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// First, create an account using RW transaction
+	addr := randomAddress()
+	account := createTestAccount(42)
+
+	rwTx, err := db.BeginRW()
+	if err != nil {
+		t.Fatalf("Failed to begin RW transaction: %v", err)
+	}
+	if err := rwTx.SetAccount(addr, account); err != nil {
+		t.Fatalf("Failed to set account: %v", err)
+	}
+	if err := rwTx.Commit(); err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	// Now read using upgradable transaction
+	tx, err := db.BeginUpgradable()
+	if err != nil {
+		t.Fatalf("Failed to begin upgradable transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	got, err := tx.GetAccount(addr)
+	if err != nil {
+		t.Fatalf("Failed to get account: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Account should exist")
+	}
+	if got.Nonce != account.Nonce {
+		t.Errorf("Expected nonce %d, got %d", account.Nonce, got.Nonce)
+	}
+}
+
+func TestUpgradableTransaction_StateRoot(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := CreateNew(tmpDir + "/test.db")
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Get initial state root from database
+	dbRoot, err := db.StateRoot()
+	if err != nil {
+		t.Fatalf("Failed to get db state root: %v", err)
+	}
+
+	// Create upgradable transaction and verify state root matches
+	tx, err := db.BeginUpgradable()
+	if err != nil {
+		t.Fatalf("Failed to begin upgradable transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	txRoot, err := tx.StateRoot()
+	if err != nil {
+		t.Fatalf("Failed to get tx state root: %v", err)
+	}
+
+	if dbRoot != txRoot {
+		t.Errorf("DB root %x != TX root %x", dbRoot, txRoot)
+	}
+}
+
+func TestUpgradableTransaction_ImplementsInterface(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := CreateNew(tmpDir + "/test.db")
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Verify TransactionRW implements Transaction interface
+	var _ Transaction = (*TransactionRW)(nil)
+
+	// Verify TransactionUpgradable implements Transaction interface
+	var _ Transaction = (*TransactionUpgradable)(nil)
+
+	// Test using the interface polymorphically
+	addr := randomAddress()
+	account := createTestAccount(1)
+
+	// Helper function that works with any Transaction
+	writeAccount := func(tx Transaction, addr Address, account *Account) error {
+		return tx.SetAccount(addr, account)
+	}
+
+	// Test with TransactionRW
+	rwTx, err := db.BeginRW()
+	if err != nil {
+		t.Fatalf("Failed to begin RW transaction: %v", err)
+	}
+	if err := writeAccount(rwTx, addr, account); err != nil {
+		t.Fatalf("Failed to write with RW: %v", err)
+	}
+	if err := rwTx.Commit(); err != nil {
+		t.Fatalf("Failed to commit RW: %v", err)
+	}
+
+	// Test with TransactionUpgradable
+	addr2 := randomAddress()
+	upgTx, err := db.BeginUpgradable()
+	if err != nil {
+		t.Fatalf("Failed to begin upgradable transaction: %v", err)
+	}
+	if err := writeAccount(upgTx, addr2, account); err != nil {
+		t.Fatalf("Failed to write with Upgradable: %v", err)
+	}
+	if _, err := upgTx.ComputeRoot(); err != nil {
+		t.Fatalf("Failed to compute root: %v", err)
+	}
+	if err := upgTx.Commit(); err != nil {
+		t.Fatalf("Failed to commit Upgradable: %v", err)
+	}
+}

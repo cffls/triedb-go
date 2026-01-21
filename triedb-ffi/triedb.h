@@ -36,6 +36,8 @@ typedef struct TrieDBTransactionRO TrieDBTransactionRO;
 
 typedef struct TrieDBTransactionRW TrieDBTransactionRW;
 
+typedef struct TrieDBTransactionUpgradable TrieDBTransactionUpgradable;
+
 typedef struct CHash {
   uint8_t bytes[32];
 } CHash;
@@ -244,6 +246,111 @@ enum triedb_error_t triedb_rw_commit(struct TrieDBTransactionRW *tx);
  * - `tx` must not be used after this call
  */
 enum triedb_error_t triedb_rw_rollback(struct TrieDBTransactionRW *tx);
+
+/**
+ * Begins an upgradable transaction (deferred write lock acquisition).
+ * Changes are accumulated in memory until compute_root() is called.
+ *
+ * # Safety
+ * - `db` must be a valid pointer
+ * - `out_tx` must be a valid pointer
+ * - Caller must call `triedb_upgradable_commit` or `triedb_upgradable_rollback` to free resources
+ */
+enum triedb_error_t triedb_begin_upgradable(const struct TrieDB *db,
+                                            struct TrieDBTransactionUpgradable **out_tx);
+
+/**
+ * Gets an account from an upgradable transaction.
+ *
+ * # Safety
+ * - Same safety requirements as `triedb_ro_get_account`
+ */
+enum triedb_error_t triedb_upgradable_get_account(struct TrieDBTransactionUpgradable *tx,
+                                                  const struct CAddress *address,
+                                                  struct CAccount *out_account,
+                                                  bool *out_exists);
+
+/**
+ * Sets an account in an upgradable transaction.
+ * Changes are accumulated in memory until compute_root() is called.
+ *
+ * # Safety
+ * - `tx` must be a valid pointer
+ * - `address` must be a valid pointer to a 20-byte array
+ * - `account` must be a valid pointer (or NULL to delete)
+ */
+enum triedb_error_t triedb_upgradable_set_account(struct TrieDBTransactionUpgradable *tx,
+                                                  const struct CAddress *address,
+                                                  const struct CAccount *account);
+
+/**
+ * Gets a storage slot from an upgradable transaction.
+ *
+ * # Safety
+ * - Same safety requirements as `triedb_ro_get_storage`
+ */
+enum triedb_error_t triedb_upgradable_get_storage(struct TrieDBTransactionUpgradable *tx,
+                                                  const struct CAddress *address,
+                                                  const struct CStorageKey *slot,
+                                                  struct CStorageValue *out_value,
+                                                  bool *out_exists);
+
+/**
+ * Sets a storage slot in an upgradable transaction.
+ * Changes are accumulated in memory until compute_root() is called.
+ *
+ * # Safety
+ * - `tx` must be a valid pointer
+ * - `address` must be a valid pointer to a 20-byte array
+ * - `slot` must be a valid pointer to a 32-byte array
+ * - `value` must be a valid pointer (or NULL to delete)
+ */
+enum triedb_error_t triedb_upgradable_set_storage(struct TrieDBTransactionUpgradable *tx,
+                                                  const struct CAddress *address,
+                                                  const struct CStorageKey *slot,
+                                                  const struct CStorageValue *value);
+
+/**
+ * Returns the current state root (before pending changes are applied).
+ *
+ * # Safety
+ * - `tx` must be a valid pointer
+ * - `out_root` must be a valid pointer to a 32-byte array
+ */
+enum triedb_error_t triedb_upgradable_state_root(const struct TrieDBTransactionUpgradable *tx,
+                                                 struct CHash *out_root);
+
+/**
+ * Acquires write lock and computes the state root with pending changes applied.
+ * This is the upgrade point - write lock is acquired here.
+ * After calling this, must call either commit() or rollback().
+ *
+ * # Safety
+ * - `tx` must be a valid pointer
+ * - `out_root` must be a valid pointer to a 32-byte array
+ */
+enum triedb_error_t triedb_upgradable_compute_root(struct TrieDBTransactionUpgradable *tx,
+                                                   struct CHash *out_root);
+
+/**
+ * Commits an upgradable transaction (persists changes).
+ * Must call compute_root() first.
+ *
+ * # Safety
+ * - `tx` must be a valid pointer
+ * - `tx` must not be used after this call
+ */
+enum triedb_error_t triedb_upgradable_commit(struct TrieDBTransactionUpgradable *tx);
+
+/**
+ * Rolls back an upgradable transaction (discards changes).
+ * Can be called before or after compute_root().
+ *
+ * # Safety
+ * - `tx` must be a valid pointer
+ * - `tx` must not be used after this call
+ */
+enum triedb_error_t triedb_upgradable_rollback(struct TrieDBTransactionUpgradable *tx);
 
 /**
  * Creates a new mutable overlay state.

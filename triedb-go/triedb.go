@@ -86,6 +86,24 @@ type TransactionRW struct {
 	ptr *C.TrieDBTransactionRW
 }
 
+// TransactionUpgradable represents a transaction with deferred write lock.
+// Changes are accumulated in memory until ComputeRoot() is called.
+// Implements the Transaction interface for interchangeability with TransactionRW.
+type TransactionUpgradable struct {
+	ptr *C.TrieDBTransactionUpgradable
+}
+
+// Transaction is the interface for read-write capable transactions.
+// Both TransactionRW and TransactionUpgradable implement this interface.
+type Transaction interface {
+	GetAccount(address Address) (*Account, error)
+	SetAccount(address Address, account *Account) error
+	GetStorage(address Address, slot Hash) (*Hash, error)
+	SetStorage(address Address, slot Hash, value *Hash) error
+	Commit() error
+	Rollback() error
+}
+
 // Open opens an existing database at the given path
 func Open(path string) (*Database, error) {
 	cPath := C.CString(path)
@@ -184,6 +202,22 @@ func (db *Database) BeginRW() (*TransactionRW, error) {
 	}
 
 	return &TransactionRW{ptr: txPtr}, nil
+}
+
+// BeginUpgradable begins an upgradable transaction (deferred write lock).
+// Changes are accumulated in memory until ComputeRoot() is called.
+func (db *Database) BeginUpgradable() (*TransactionUpgradable, error) {
+	if db.ptr == nil {
+		return nil, ErrNullPointer
+	}
+
+	var txPtr *C.TrieDBTransactionUpgradable
+	result := C.triedb_begin_upgradable(db.ptr, &txPtr)
+	if err := mapError(uint32(result)); err != nil {
+		return nil, err
+	}
+
+	return &TransactionUpgradable{ptr: txPtr}, nil
 }
 
 // GetAccount retrieves an account from a read-only transaction
@@ -400,6 +434,192 @@ func (tx *TransactionRW) Rollback() error {
 		return ErrNullPointer
 	}
 	result := C.triedb_rw_rollback(tx.ptr)
+	tx.ptr = nil
+	return mapError(uint32(result))
+}
+
+// ============================================================================
+// Upgradable Transaction Methods
+// ============================================================================
+
+// GetAccount retrieves an account from an upgradable transaction
+func (tx *TransactionUpgradable) GetAccount(address Address) (*Account, error) {
+	if tx.ptr == nil {
+		return nil, ErrNullPointer
+	}
+
+	var cAddr C.CAddress
+	copyBytesToC(&cAddr.bytes[0], address[:], AddressLength)
+
+	var cAccount C.CAccount
+	var exists C.bool
+	result := C.triedb_upgradable_get_account(tx.ptr, &cAddr, &cAccount, &exists)
+	if err := mapError(uint32(result)); err != nil {
+		return nil, err
+	}
+
+	if !exists {
+		return nil, nil
+	}
+
+	balance := new(uint256.Int)
+	balance.SetBytes(C.GoBytes(unsafe.Pointer(&cAccount.balance[0]), C.int(HashLength)))
+
+	var storageRoot Hash
+	copy(storageRoot[:], C.GoBytes(unsafe.Pointer(&cAccount.storage_root[0]), C.int(HashLength)))
+
+	codeHash := C.GoBytes(unsafe.Pointer(&cAccount.code_hash[0]), C.int(HashLength))
+
+	return &Account{
+		Nonce:       uint64(cAccount.nonce),
+		Balance:     balance,
+		StorageRoot: storageRoot,
+		CodeHash:    codeHash,
+	}, nil
+}
+
+// SetAccount sets an account in an upgradable transaction (nil to delete)
+// Changes are accumulated in memory until ComputeRoot() is called.
+func (tx *TransactionUpgradable) SetAccount(address Address, account *Account) error {
+	if tx.ptr == nil {
+		return ErrNullPointer
+	}
+
+	var cAddr C.CAddress
+	copyBytesToC(&cAddr.bytes[0], address[:], AddressLength)
+
+	if account == nil {
+		// Delete account
+		result := C.triedb_upgradable_set_account(tx.ptr, &cAddr, nil)
+		return mapError(uint32(result))
+	}
+
+	// Set account
+	var cAccount C.CAccount
+	cAccount.nonce = C.uint64_t(account.Nonce)
+
+	// Convert uint256.Int to 32-byte big-endian
+	balanceBytes := account.Balance.Bytes32()
+	copyBytesToC(&cAccount.balance[0], balanceBytes[:], HashLength)
+
+	copyBytesToC(&cAccount.storage_root[0], account.StorageRoot[:], HashLength)
+
+	if len(account.CodeHash) != HashLength {
+		return fmt.Errorf("account code hash must be %d bytes, got %d", HashLength, len(account.CodeHash))
+	}
+	copyBytesToC(&cAccount.code_hash[0], account.CodeHash, HashLength)
+
+	result := C.triedb_upgradable_set_account(tx.ptr, &cAddr, &cAccount)
+	return mapError(uint32(result))
+}
+
+// GetStorage retrieves a storage slot from an upgradable transaction
+func (tx *TransactionUpgradable) GetStorage(address Address, slot Hash) (*Hash, error) {
+	if tx.ptr == nil {
+		return nil, ErrNullPointer
+	}
+
+	var cAddr C.CAddress
+	copyBytesToC(&cAddr.bytes[0], address[:], AddressLength)
+
+	var cSlot C.CStorageKey
+	copyBytesToC(&cSlot.bytes[0], slot[:], HashLength)
+
+	var cValue C.CStorageValue
+	var exists C.bool
+	result := C.triedb_upgradable_get_storage(tx.ptr, &cAddr, &cSlot, &cValue, &exists)
+	if err := mapError(uint32(result)); err != nil {
+		return nil, err
+	}
+
+	if !exists {
+		return nil, nil
+	}
+
+	var value Hash
+	copy(value[:], C.GoBytes(unsafe.Pointer(&cValue.bytes[0]), C.int(HashLength)))
+	return &value, nil
+}
+
+// SetStorage sets a storage slot in an upgradable transaction (nil to delete)
+// Changes are accumulated in memory until ComputeRoot() is called.
+func (tx *TransactionUpgradable) SetStorage(address Address, slot Hash, value *Hash) error {
+	if tx.ptr == nil {
+		return ErrNullPointer
+	}
+
+	var cAddr C.CAddress
+	copyBytesToC(&cAddr.bytes[0], address[:], AddressLength)
+
+	var cSlot C.CStorageKey
+	copyBytesToC(&cSlot.bytes[0], slot[:], HashLength)
+
+	if value == nil {
+		// Delete storage
+		result := C.triedb_upgradable_set_storage(tx.ptr, &cAddr, &cSlot, nil)
+		return mapError(uint32(result))
+	}
+
+	var cValue C.CStorageValue
+	copyBytesToC(&cValue.bytes[0], (*value)[:], HashLength)
+
+	result := C.triedb_upgradable_set_storage(tx.ptr, &cAddr, &cSlot, &cValue)
+	return mapError(uint32(result))
+}
+
+// ComputeRoot acquires the write lock and computes the new state root.
+// This is the upgrade point - after calling this, must call Commit() or Rollback().
+func (tx *TransactionUpgradable) ComputeRoot() (Hash, error) {
+	if tx.ptr == nil {
+		return Hash{}, ErrNullPointer
+	}
+
+	var hash C.CHash
+	result := C.triedb_upgradable_compute_root(tx.ptr, &hash)
+	if err := mapError(uint32(result)); err != nil {
+		return Hash{}, err
+	}
+
+	var root Hash
+	copy(root[:], C.GoBytes(unsafe.Pointer(&hash.bytes[0]), C.int(HashLength)))
+	return root, nil
+}
+
+// StateRoot returns the current state root (before pending changes are applied).
+func (tx *TransactionUpgradable) StateRoot() (Hash, error) {
+	if tx.ptr == nil {
+		return Hash{}, ErrNullPointer
+	}
+
+	var hash C.CHash
+	result := C.triedb_upgradable_state_root(tx.ptr, &hash)
+	if err := mapError(uint32(result)); err != nil {
+		return Hash{}, err
+	}
+
+	var root Hash
+	copy(root[:], C.GoBytes(unsafe.Pointer(&hash.bytes[0]), C.int(HashLength)))
+	return root, nil
+}
+
+// Commit commits an upgradable transaction (persists changes).
+// Must call ComputeRoot() first.
+func (tx *TransactionUpgradable) Commit() error {
+	if tx.ptr == nil {
+		return ErrNullPointer
+	}
+	result := C.triedb_upgradable_commit(tx.ptr)
+	tx.ptr = nil
+	return mapError(uint32(result))
+}
+
+// Rollback rolls back an upgradable transaction (discards changes).
+// Can be called before or after ComputeRoot().
+func (tx *TransactionUpgradable) Rollback() error {
+	if tx.ptr == nil {
+		return ErrNullPointer
+	}
+	result := C.triedb_upgradable_rollback(tx.ptr)
 	tx.ptr = nil
 	return mapError(uint32(result))
 }

@@ -2,12 +2,11 @@ use std::ffi::{c_char, CStr};
 use std::sync::Arc;
 
 use alloy_primitives::{Address, StorageKey, B256, U256};
-use alloy_trie::Nibbles;
 use triedb::{
     account::Account,
     overlay::{OverlayState, OverlayStateMut, OverlayValue},
-    path::{AddressPath, StoragePath},
-    transaction::{Transaction, RO, RW},
+    path::{AddressPath, RawPath, StoragePath},
+    transaction::{Transaction, UpgradableTransaction, RO, RW},
     Database,
 };
 
@@ -43,6 +42,10 @@ pub struct TrieDBTransactionRO {
 
 pub struct TrieDBTransactionRW {
     inner: Option<Transaction<Arc<Database>, RW>>,
+}
+
+pub struct TrieDBTransactionUpgradable {
+    inner: Option<UpgradableTransaction<Arc<Database>>>,
 }
 
 pub struct TrieDBOverlayStateMut {
@@ -640,6 +643,326 @@ pub unsafe extern "C" fn triedb_rw_rollback(tx: *mut TrieDBTransactionRW) -> Tri
 }
 
 // ============================================================================
+// Upgradable Transactions
+// ============================================================================
+
+/// Begins an upgradable transaction (deferred write lock acquisition).
+/// Changes are accumulated in memory until compute_root() is called.
+///
+/// # Safety
+/// - `db` must be a valid pointer
+/// - `out_tx` must be a valid pointer
+/// - Caller must call `triedb_upgradable_commit` or `triedb_upgradable_rollback` to free resources
+#[no_mangle]
+pub unsafe extern "C" fn triedb_begin_upgradable(
+    db: *const TrieDB,
+    out_tx: *mut *mut TrieDBTransactionUpgradable,
+) -> TrieDBError {
+    if db.is_null() || out_tx.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let db = &*db;
+    let tx = triedb::database::begin_upgradable(db.inner.clone());
+    let boxed = Box::new(TrieDBTransactionUpgradable { inner: Some(tx) });
+    *out_tx = Box::into_raw(boxed);
+    TrieDBError::Success
+}
+
+/// Gets an account from an upgradable transaction.
+///
+/// # Safety
+/// - Same safety requirements as `triedb_ro_get_account`
+#[no_mangle]
+pub unsafe extern "C" fn triedb_upgradable_get_account(
+    tx: *mut TrieDBTransactionUpgradable,
+    address: *const CAddress,
+    out_account: *mut CAccount,
+    out_exists: *mut bool,
+) -> TrieDBError {
+    if tx.is_null() || address.is_null() || out_account.is_null() || out_exists.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let tx_ref = &mut *tx;
+    let tx_inner = match tx_ref.inner.as_mut() {
+        Some(t) => t,
+        None => return TrieDBError::TransactionFailed,
+    };
+
+    let addr = Address::from_slice(&(*address).bytes);
+    let path = AddressPath::for_address(addr);
+
+    match tx_inner.get_account(&path) {
+        Ok(Some(account)) => {
+            (*out_account).nonce = account.nonce;
+            account
+                .balance
+                .to_be_bytes_vec()
+                .as_slice()
+                .iter()
+                .enumerate()
+                .for_each(|(i, &b)| {
+                    (*out_account).balance[i] = b;
+                });
+            (*out_account)
+                .storage_root
+                .copy_from_slice(account.storage_root.as_slice());
+            (*out_account)
+                .code_hash
+                .copy_from_slice(account.code_hash.as_slice());
+            *out_exists = true;
+            TrieDBError::Success
+        }
+        Ok(None) => {
+            *out_exists = false;
+            TrieDBError::Success
+        }
+        Err(_) => TrieDBError::TransactionFailed,
+    }
+}
+
+/// Sets an account in an upgradable transaction.
+/// Changes are accumulated in memory until compute_root() is called.
+///
+/// # Safety
+/// - `tx` must be a valid pointer
+/// - `address` must be a valid pointer to a 20-byte array
+/// - `account` must be a valid pointer (or NULL to delete)
+#[no_mangle]
+pub unsafe extern "C" fn triedb_upgradable_set_account(
+    tx: *mut TrieDBTransactionUpgradable,
+    address: *const CAddress,
+    account: *const CAccount,
+) -> TrieDBError {
+    if tx.is_null() || address.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let tx_ref = &mut *tx;
+    let tx_inner = match tx_ref.inner.as_mut() {
+        Some(t) => t,
+        None => return TrieDBError::TransactionFailed,
+    };
+
+    let addr = Address::from_slice(&(*address).bytes);
+    let path = AddressPath::for_address(addr);
+
+    let account_opt = if account.is_null() {
+        None
+    } else {
+        let balance = U256::from_be_slice(&(*account).balance);
+        let storage_root = B256::from_slice(&(*account).storage_root);
+        let code_hash = B256::from_slice(&(*account).code_hash);
+        Some(Account::new(
+            (*account).nonce,
+            balance,
+            storage_root,
+            code_hash,
+        ))
+    };
+
+    match tx_inner.set_account(path, account_opt) {
+        Ok(_) => TrieDBError::Success,
+        Err(_) => TrieDBError::TransactionFailed,
+    }
+}
+
+/// Gets a storage slot from an upgradable transaction.
+///
+/// # Safety
+/// - Same safety requirements as `triedb_ro_get_storage`
+#[no_mangle]
+pub unsafe extern "C" fn triedb_upgradable_get_storage(
+    tx: *mut TrieDBTransactionUpgradable,
+    address: *const CAddress,
+    slot: *const CStorageKey,
+    out_value: *mut CStorageValue,
+    out_exists: *mut bool,
+) -> TrieDBError {
+    if tx.is_null()
+        || address.is_null()
+        || slot.is_null()
+        || out_value.is_null()
+        || out_exists.is_null()
+    {
+        return TrieDBError::NullPointer;
+    }
+
+    let tx_ref = &mut *tx;
+    let tx_inner = match tx_ref.inner.as_mut() {
+        Some(t) => t,
+        None => return TrieDBError::TransactionFailed,
+    };
+
+    let addr = Address::from_slice(&(*address).bytes);
+    let slot_key = StorageKey::from_slice(&(*slot).bytes);
+    let path = StoragePath::for_address_and_slot(addr, slot_key);
+
+    match tx_inner.get_storage_slot(&path) {
+        Ok(Some(value)) => {
+            (*out_value)
+                .bytes
+                .copy_from_slice(&value.to_be_bytes::<32>());
+            *out_exists = true;
+            TrieDBError::Success
+        }
+        Ok(None) => {
+            *out_exists = false;
+            TrieDBError::Success
+        }
+        Err(_) => TrieDBError::TransactionFailed,
+    }
+}
+
+/// Sets a storage slot in an upgradable transaction.
+/// Changes are accumulated in memory until compute_root() is called.
+///
+/// # Safety
+/// - `tx` must be a valid pointer
+/// - `address` must be a valid pointer to a 20-byte array
+/// - `slot` must be a valid pointer to a 32-byte array
+/// - `value` must be a valid pointer (or NULL to delete)
+#[no_mangle]
+pub unsafe extern "C" fn triedb_upgradable_set_storage(
+    tx: *mut TrieDBTransactionUpgradable,
+    address: *const CAddress,
+    slot: *const CStorageKey,
+    value: *const CStorageValue,
+) -> TrieDBError {
+    if tx.is_null() || address.is_null() || slot.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let tx_ref = &mut *tx;
+    let tx_inner = match tx_ref.inner.as_mut() {
+        Some(t) => t,
+        None => return TrieDBError::TransactionFailed,
+    };
+
+    let addr = Address::from_slice(&(*address).bytes);
+    let slot_key = StorageKey::from_slice(&(*slot).bytes);
+    let path = StoragePath::for_address_and_slot(addr, slot_key);
+
+    let value_opt = if value.is_null() {
+        None
+    } else {
+        Some(U256::from_be_bytes((*value).bytes))
+    };
+
+    match tx_inner.set_storage_slot(path, value_opt) {
+        Ok(_) => TrieDBError::Success,
+        Err(_) => TrieDBError::TransactionFailed,
+    }
+}
+
+/// Returns the current state root (before pending changes are applied).
+///
+/// # Safety
+/// - `tx` must be a valid pointer
+/// - `out_root` must be a valid pointer to a 32-byte array
+#[no_mangle]
+pub unsafe extern "C" fn triedb_upgradable_state_root(
+    tx: *const TrieDBTransactionUpgradable,
+    out_root: *mut CHash,
+) -> TrieDBError {
+    if tx.is_null() || out_root.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let tx_ref = &*tx;
+    let tx_inner = match tx_ref.inner.as_ref() {
+        Some(t) => t,
+        None => return TrieDBError::TransactionFailed,
+    };
+
+    let root = tx_inner.state_root();
+    (*out_root).bytes.copy_from_slice(root.as_slice());
+    TrieDBError::Success
+}
+
+/// Acquires write lock and computes the state root with pending changes applied.
+/// This is the upgrade point - write lock is acquired here.
+/// After calling this, must call either commit() or rollback().
+///
+/// # Safety
+/// - `tx` must be a valid pointer
+/// - `out_root` must be a valid pointer to a 32-byte array
+#[no_mangle]
+pub unsafe extern "C" fn triedb_upgradable_compute_root(
+    tx: *mut TrieDBTransactionUpgradable,
+    out_root: *mut CHash,
+) -> TrieDBError {
+    if tx.is_null() || out_root.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let tx_ref = &mut *tx;
+    let tx_inner = match tx_ref.inner.as_mut() {
+        Some(t) => t,
+        None => return TrieDBError::TransactionFailed,
+    };
+
+    match tx_inner.compute_root() {
+        Ok(root) => {
+            (*out_root).bytes.copy_from_slice(root.as_slice());
+            TrieDBError::Success
+        }
+        Err(_) => TrieDBError::TransactionFailed,
+    }
+}
+
+/// Commits an upgradable transaction (persists changes).
+/// Must call compute_root() first.
+///
+/// # Safety
+/// - `tx` must be a valid pointer
+/// - `tx` must not be used after this call
+#[no_mangle]
+pub unsafe extern "C" fn triedb_upgradable_commit(
+    tx: *mut TrieDBTransactionUpgradable,
+) -> TrieDBError {
+    if tx.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let mut tx_box = Box::from_raw(tx);
+    if let Some(tx_inner) = tx_box.inner.take() {
+        match tx_inner.commit() {
+            Ok(_) => TrieDBError::Success,
+            Err(_) => TrieDBError::TransactionFailed,
+        }
+    } else {
+        TrieDBError::TransactionFailed
+    }
+}
+
+/// Rolls back an upgradable transaction (discards changes).
+/// Can be called before or after compute_root().
+///
+/// # Safety
+/// - `tx` must be a valid pointer
+/// - `tx` must not be used after this call
+#[no_mangle]
+pub unsafe extern "C" fn triedb_upgradable_rollback(
+    tx: *mut TrieDBTransactionUpgradable,
+) -> TrieDBError {
+    if tx.is_null() {
+        return TrieDBError::NullPointer;
+    }
+
+    let mut tx_box = Box::from_raw(tx);
+    if let Some(tx_inner) = tx_box.inner.take() {
+        match tx_inner.abort() {
+            Ok(_) => TrieDBError::Success,
+            Err(_) => TrieDBError::TransactionFailed,
+        }
+    } else {
+        TrieDBError::TransactionFailed
+    }
+}
+
+// ============================================================================
 // Overlay State Operations
 // ============================================================================
 
@@ -701,7 +1024,7 @@ pub unsafe extern "C" fn triedb_overlay_mut_insert_account(
     let overlay_ref = &mut *overlay;
     let addr = Address::from_slice(&(*address).bytes);
     let path = AddressPath::for_address(addr);
-    let nibbles: Nibbles = path.into();
+    let raw_path: RawPath = path.into();
 
     let value = if account.is_null() {
         None
@@ -713,7 +1036,7 @@ pub unsafe extern "C" fn triedb_overlay_mut_insert_account(
         Some(OverlayValue::Account(acc))
     };
 
-    overlay_ref.inner.insert(nibbles, value);
+    overlay_ref.inner.insert(raw_path, value);
     TrieDBError::Success
 }
 
@@ -739,7 +1062,7 @@ pub unsafe extern "C" fn triedb_overlay_mut_insert_storage(
     let addr = Address::from_slice(&(*address).bytes);
     let slot_key = StorageKey::from_slice(&(*slot).bytes);
     let path = StoragePath::for_address_and_slot(addr, slot_key);
-    let nibbles: Nibbles = path.into();
+    let raw_path: RawPath = path.into();
 
     let val = if value.is_null() {
         None
@@ -747,7 +1070,7 @@ pub unsafe extern "C" fn triedb_overlay_mut_insert_storage(
         Some(OverlayValue::Storage(U256::from_be_bytes((*value).bytes)))
     };
 
-    overlay_ref.inner.insert(nibbles, val);
+    overlay_ref.inner.insert(raw_path, val);
     TrieDBError::Success
 }
 
